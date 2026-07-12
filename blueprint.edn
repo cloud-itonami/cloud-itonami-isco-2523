@@ -1,0 +1,11 @@
+[{:itonami.blueprint/id "cloud-itonami-isco-2523"
+  :itonami.blueprint/name "Community Network Architecture"
+  :itonami.blueprint/isco-08 "2523"
+  :itonami.blueprint/domain :ict/network-professionals
+  :itonami.blueprint/license "AGPL-3.0-or-later"
+  :itonami.blueprint/social-impact [:service-reliability :security-hygiene :digital-inclusion]
+  :itonami.blueprint/governor :network-architecture-governor
+  :itonami.blueprint/robotics true
+  :itonami.blueprint/required-technologies [:robotics :identity :forms :dmn :bpmn :audit-ledger]
+  :itonami.blueprint/status :public-oss
+  :db/id -1}]
