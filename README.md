@@ -5,13 +5,25 @@ Open Business Blueprint for **ISCO-08 2523**: Computer Network Professionals —
 pure-cognitive work, the LLM-first wave, **no robotics gate** —
 eligible for actor implementation now.
 
-**Maturity: `:blueprint`** — blueprint only; **no actor implementation
-yet**, and none is claimed. The implemented actor will follow the
-fleet-standard pattern (advisor-LLM sealed behind the independent
-`:network-architecture-governor` governor, human approval workflow, append-only
-audit ledger); outbound communication (PR releases, sales outreach) is
-always :external-send and never auto-committed. Fourth wave-0 cognitive
-batch (ADR-2607122700 addenda).
+**Maturity: `:implemented`** — NetworkProfessionalsAdvisor ⊣
+NetworkProfessionalsGovernor as a langgraph StateGraph
+(`intake → advise → govern → decide → commit/hold`, human-approval
+interrupt), modeled on cloud-itonami-isco-4311's bookkeeping actor.
+14 tests / 29 assertions green.
+
+The network HARD invariant — shadow detection by set containment:
+
+1. **Shadowed rule** — a proposed rule whose src/dst zone sets are
+   contained by an earlier active rule's is dead config, whether the
+   shadow is a redundancy (same action) or a contradiction (different
+   action — the earlier rule always wins). Dead config is set
+   containment, not opinion.
+2. **Zone basis** — rules may only cite this client's registered
+   zones (no invented or foreign zones).
+
+Also HARD: unregistered organization, non-`:propose` effect.
+Escalations (always human sign-off): `:apply-to-production` (live
+network change), low confidence (< 0.6).
 
 AGPL-3.0-or-later, forkable by any qualified operator. Part of the
 [cloud-itonami](https://itonami.cloud) open business fleet.

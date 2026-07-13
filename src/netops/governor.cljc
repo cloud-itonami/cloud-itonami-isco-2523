@@ -1,0 +1,94 @@
+(ns netops.governor
+  "NetworkProfessionalsGovernor — the independent safety/traceability
+  layer for the ISCO-08 2523 community network-professionals actor
+  (itonami actor pattern, ADR-2607011000 / CLAUDE.md Actors section).
+  Modeled on cloud-itonami-isco-4311's bookkeeping.governor. Network
+  twist: a proposed rule that an earlier, broader rule already covers
+  is SHADOWED — dead config detected by set containment, not opinion.
+  Whether the shadow is a redundancy (same action) or a contradiction
+  (different action), the proposal is dead on arrival and must hold.
+
+  HARD invariants (:hard? true, ALWAYS :hold, never overridable):
+    1. client provenance — the organization must be registered.
+    2. no-actuation      — proposal :effect must be :propose.
+    3. zone basis        — every referenced zone must be REGISTERED
+                           and belong to this client (no invented or
+                           foreign zones).
+    4. shadow detection  — an existing active rule whose :src-zones
+                           and :dst-zones are supersets of the
+                           proposed rule's shadows it (appended rules
+                           evaluate last). Shadowed config is dead
+                           config.
+  ESCALATION invariants (:escalate? true, human sign-off):
+    5. :op :apply-to-production (live network change).
+    6. low confidence (< `confidence-floor`)."
+  (:require [clojure.set :as set]
+            [netops.store :as store]))
+
+(def confidence-floor 0.6)
+
+(defn- zone-violations [request rule store]
+  (into []
+        (keep (fn [zone-id]
+                (let [z (store/zone store zone-id)]
+                  (cond
+                    (nil? z)
+                    {:rule :unknown-zone :detail (str "未登録 zone: " zone-id)}
+                    (not= (:client-id z) (:client-id request))
+                    {:rule :zone-wrong-client
+                     :detail (str "zone が別 client のもの: " zone-id)}))))
+        (set/union (set (:src-zones rule)) (set (:dst-zones rule)))))
+
+(defn- shadowing-rule
+  "First existing active rule whose match sets contain `rule`'s
+  (superset on both src and dst). Appended rules evaluate last, so any
+  such earlier rule makes the new one dead config."
+  [existing rule]
+  (first (filter (fn [r]
+                   (and (set/superset? (set (:src-zones r)) (set (:src-zones rule)))
+                        (set/superset? (set (:dst-zones r)) (set (:dst-zones rule)))))
+                 existing)))
+
+(defn- hard-violations [{:keys [request proposal]} client-record store]
+  (let [{:keys [op rule]} proposal
+        add? (= :add-rule op)]
+    (cond-> []
+      (nil? client-record)
+      (conj {:rule :no-client :detail "未登録 client"})
+
+      (not= :propose (:effect proposal))
+      (conj {:rule :no-actuation :detail "effect は :propose のみ許可（直接書込禁止）"})
+
+      (and add? (nil? rule))
+      (conj {:rule :no-rule :detail ":add-rule は :rule の本体が必須"})
+
+      (and add? rule client-record)
+      (into (zone-violations request rule store))
+
+      (and add? rule client-record
+           (shadowing-rule (store/rules-of store (:client-id request)) rule))
+      (conj (let [s (shadowing-rule (store/rules-of store (:client-id request)) rule)]
+              {:rule :shadowed-rule
+               :detail (str "既存 rule " (:rule-id s) " (order " (:order s)
+                            ", " (name (:action s)) ") が提案 rule を包含 — "
+                            (if (= (:action s) (:action rule))
+                              "冗長" "矛盾（先行 rule が常に勝つ）")
+                            "。dead config は集合包含であって意見ではない")})))))
+
+(defn check
+  "Assess a proposal against `request`/`context`/`proposal` and a
+  `store` implementing `netops.store/Store`. Pure — never mutates the
+  store."
+  [request context proposal store]
+  (let [client-record (store/client store (:client-id request))
+        hard (hard-violations {:request request :proposal proposal}
+                              client-record store)
+        hard? (boolean (seq hard))
+        conf (or (:confidence proposal) 0.0)
+        low? (< conf confidence-floor)
+        risky-op? (= :apply-to-production (:op proposal))]
+    {:ok? (and (not hard?) (not low?) (not risky-op?))
+     :violations hard
+     :confidence conf
+     :hard? hard?
+     :escalate? (and (not hard?) (or low? risky-op?))}))
