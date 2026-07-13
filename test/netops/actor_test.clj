@@ -1,0 +1,44 @@
+(ns netops.actor-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [netops.actor :as actor]
+            [netops.store :as store]))
+
+(defn- fresh-store []
+  (let [st (store/mem-store)]
+    (store/register-client! st {:client-id "client-1" :name "Kobo Trade"})
+    (doseq [z ["lan" "db"]]
+      (store/register-zone! st {:zone-id z :client-id "client-1" :name z}))
+    st))
+
+(deftest commits-a-non-shadowed-rule
+  (let [st (fresh-store)
+        graph (actor/build-graph {:store st})
+        request {:client-id "client-1" :op :add-rule :stake :low
+                 :rule {:action :allow :src-zones #{"lan"} :dst-zones #{"db"}}}
+        result (actor/run-request! graph request {} "thread-1")]
+    (is (= :done (:status result)))
+    (is (some? (get-in result [:state :record])))
+    (is (= 1 (count (store/records-of st "client-1"))))))
+
+(deftest holds-a-shadowed-rule
+  (let [st (fresh-store)]
+    (store/register-rule! st {:rule-id "R-1" :client-id "client-1" :order 1
+                              :action :deny :src-zones #{"lan"}
+                              :dst-zones #{"db"}})
+    (let [graph (actor/build-graph {:store st})
+          request {:client-id "client-1" :op :add-rule :stake :low
+                   :rule {:action :allow :src-zones #{"lan"} :dst-zones #{"db"}}}
+          result (actor/run-request! graph request {} "thread-2")]
+      (is (= :hold (:disposition (:state result))))
+      (is (empty? (store/records-of st "client-1"))))))
+
+(deftest interrupts-then-applies-on-human-approval
+  (let [st (fresh-store)
+        graph (actor/build-graph {:store st})
+        request {:client-id "client-1" :op :apply-to-production :stake :high}
+        interrupted (actor/run-request! graph request {} "thread-3")]
+    (is (= :interrupted (:status interrupted)))
+    (is (empty? (store/records-of st "client-1")))
+    (let [resumed (actor/approve! graph "thread-3")]
+      (is (= :done (:status resumed)))
+      (is (= 1 (count (store/records-of st "client-1")))))))
