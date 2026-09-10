@@ -9,7 +9,16 @@ eligible for actor implementation now.
 NetworkProfessionalsGovernor as a langgraph StateGraph
 (`intake → advise → govern → decide → commit/hold`, human-approval
 interrupt), modeled on cloud-itonami-isco-4311's bookkeeping actor.
-14 tests / 29 assertions green.
+25 tests / 73 assertions green.
+
+Run them with `clojure -M:test`, which runs `run_tests.kotoba`. That
+count is a **floor**, not a note: the runner reads it back out of this
+sentence and refuses (exit 2) if the run comes in under it, if the
+sentence goes missing, or if it ever publishes zero. Between
+2026-09-10 and 2026-09-11 this suite exited 0 having run zero tests —
+the rename to `.kotoba` had made every test invisible to
+`cognitect.test-runner`, and a suite that ran nothing returned the
+same value as a suite that ran everything.
 
 The network HARD invariant — shadow detection by set containment:
 
@@ -20,8 +29,20 @@ The network HARD invariant — shadow detection by set containment:
    containment, not opinion.
 2. **Zone basis** — rules may only cite this client's registered
    zones (no invented or foreign zones).
+3. **Empty basis** — a rule naming no zone on either side matches
+   nothing; dead by construction rather than by containment.
 
-Also HARD: unregistered organization, non-`:propose` effect.
+**1–3 read the rule body, whatever operation carries it.** Until
+2026-09-11 they sat behind `(= :add-rule op)`, so the identical body
+under `:draft-change` or `:apply-to-production` was never examined —
+and `:apply-to-production` with an invented zone reached human
+sign-off described as having no violations. Stopping and giving a
+reason are different acts.
+
+Also HARD: unregistered organization, non-`:propose` effect, and an
+**undeclared operation** — `:op` is a closed allowlist
+(`:add-rule`, `:draft-change`, `:apply-to-production`), so anything
+else holds instead of passing through unchecked.
 Escalations (always human sign-off): `:apply-to-production` (live
 network change), low confidence (< 0.6).
 

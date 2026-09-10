@@ -8,24 +8,85 @@
   Whether the shadow is a redundancy (same action) or a contradiction
   (different action), the proposal is dead on arrival and must hold.
 
+  ## The invariants bind to the RULE BODY, not to one operation name
+
+  Until 2026-09-11 every rule-body check here sat behind
+  `add? (= :add-rule op)`. That is a **denylist wearing an
+  allowlist's clothes**: it named the one operation it policed and let
+  every other operation carry the identical rule body straight past
+  zone basis and shadow detection. Measured on this repo at 2aa259b,
+  against a registered client with one active rule:
+
+      {:op :add-rule     :rule {:src-zones #{\"z-INVENTED\"} ...}}
+        => :hard? true   [:unknown-zone]
+      {:op :draft-change :rule {:src-zones #{\"z-INVENTED\"} ...}}
+        => :ok? true     []          ; same body, no checks at all
+      {:op :delete-every-rule ...}                 ; nobody declared it
+        => :ok? true     []
+      {:op :apply-to-production :rule {... invented ...}}
+        => :escalate? true []        ; the LIVE change, no violations
+
+  The last line is the worst of the four, because it **looked
+  governed**: it stopped and asked a human. What reached the human was
+  a live network change citing a zone that does not exist, described
+  as having no violations. Stopping and giving a reason are two
+  different acts, and the output could not tell them apart.
+
+  So the rule-body checks are no longer keyed on the operation at all.
+  If a proposal carries a `:rule`, that rule is checked — and the
+  operation vocabulary is a closed allowlist, so an operation nobody
+  declared is refused rather than waved through.
+
   HARD invariants (:hard? true, ALWAYS :hold, never overridable):
-    1. client provenance — the organization must be registered.
-    2. no-actuation      — proposal :effect must be :propose.
-    3. zone basis        — every referenced zone must be REGISTERED
-                           and belong to this client (no invented or
-                           foreign zones).
-    4. shadow detection  — an existing active rule whose :src-zones
-                           and :dst-zones are supersets of the
-                           proposed rule's shadows it (appended rules
-                           evaluate last). Shadowed config is dead
-                           config.
+    1. client provenance    — the organization must be registered.
+    2. declared operation   — :op must be in `operations` (closed).
+    3. no-actuation         — proposal :effect must be :propose.
+    4. rule body present    — operations declaring :rule-required?
+                              must carry one.
+    5. rule basis non-empty — a rule matching no zone on either side
+                              matches nothing; dead by construction.
+    6. zone basis           — every referenced zone must be REGISTERED
+                              and belong to this client (no invented or
+                              foreign zones).
+    7. shadow detection     — an existing active rule whose :src-zones
+                              and :dst-zones are supersets of the
+                              proposed rule's shadows it (appended
+                              rules evaluate last). Shadowed config is
+                              dead config.
+  6 and 7 apply to ANY proposal carrying a :rule, under any declared
+  operation.
+
   ESCALATION invariants (:escalate? true, human sign-off):
-    5. :op :apply-to-production (live network change).
-    6. low confidence (< `confidence-floor`)."
+    8. operations declaring :escalates? (live network change).
+    9. low confidence (< `confidence-floor`)."
   (:require [clojure.set :as set]
             [netops.store :as store]))
 
 (def confidence-floor 0.6)
+
+;; The closed operation vocabulary. `:rule-required?` says the
+;; operation is meaningless without a rule body; it does NOT say the
+;; rule checks are limited to it. :apply-to-production applies config
+;; drafted earlier, so it need not carry a fresh rule — but if it does
+;; carry one, invariants 5-7 read it like any other.
+(def operations
+  {:add-rule            {:rule-required? true  :escalates? false}
+   :draft-change        {:rule-required? true  :escalates? false}
+   :apply-to-production {:rule-required? false :escalates? true}})
+
+(defn supported?
+  "Is `op` a declared operation? Closed set — an undeclared operation
+  is a HARD violation, not a pass-through."
+  [op]
+  (contains? operations op))
+
+(defn rule-required? [op] (boolean (get-in operations [op :rule-required?])))
+(defn escalates? [op] (boolean (get-in operations [op :escalates?])))
+
+(defn- rule-basis
+  "Every zone the rule names, on either side."
+  [rule]
+  (set/union (set (:src-zones rule)) (set (:dst-zones rule))))
 
 (defn- zone-violations [request rule store]
   (into []
@@ -37,7 +98,7 @@
                     (not= (:client-id z) (:client-id request))
                     {:rule :zone-wrong-client
                      :detail (str "zone が別 client のもの: " zone-id)}))))
-        (set/union (set (:src-zones rule)) (set (:dst-zones rule)))))
+        (rule-basis rule)))
 
 (defn- shadowing-rule
   "First existing active rule whose match sets contain `rule`'s
@@ -51,21 +112,32 @@
 
 (defn- hard-violations [{:keys [request proposal]} client-record store]
   (let [{:keys [op rule]} proposal
-        add? (= :add-rule op)]
+        ;; Checked whenever a body is present — NOT gated on `op`.
+        checkable? (and rule client-record)
+        basis      (when rule (rule-basis rule))]
     (cond-> []
       (nil? client-record)
       (conj {:rule :no-client :detail "未登録 client"})
 
+      (not (supported? op))
+      (conj {:rule :unsupported-operation
+             :detail (str "宣言されていない operation: " (pr-str op)
+                          "（許可: " (pr-str (sort (keys operations))) "）")})
+
       (not= :propose (:effect proposal))
       (conj {:rule :no-actuation :detail "effect は :propose のみ許可（直接書込禁止）"})
 
-      (and add? (nil? rule))
-      (conj {:rule :no-rule :detail ":add-rule は :rule の本体が必須"})
+      (and (rule-required? op) (nil? rule))
+      (conj {:rule :no-rule :detail (str (pr-str op) " は :rule の本体が必須")})
 
-      (and add? rule client-record)
+      (and rule (empty? basis))
+      (conj {:rule :empty-rule-basis
+             :detail "src/dst とも zone を持たない rule は何にも一致しない — 構成上の dead config"})
+
+      checkable?
       (into (zone-violations request rule store))
 
-      (and add? rule client-record
+      (and checkable? (seq basis)
            (shadowing-rule (store/rules-of store (:client-id request)) rule))
       (conj (let [s (shadowing-rule (store/rules-of store (:client-id request)) rule)]
               {:rule :shadowed-rule
@@ -86,7 +158,7 @@
         hard? (boolean (seq hard))
         conf (or (:confidence proposal) 0.0)
         low? (< conf confidence-floor)
-        risky-op? (= :apply-to-production (:op proposal))]
+        risky-op? (escalates? (:op proposal))]
     {:ok? (and (not hard?) (not low?) (not risky-op?))
      :violations hard
      :confidence conf

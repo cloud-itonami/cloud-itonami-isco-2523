@@ -42,3 +42,16 @@
     (let [resumed (actor/approve! graph "thread-3")]
       (is (= :done (:status resumed)))
       (is (= 1 (count (store/records-of st "client-1")))))))
+
+(deftest holds-a-draft-change-citing-a-zone-that-does-not-exist
+  (testing "end to end: the graph must not commit a record for a rule body
+            the governor never used to read, because the operation was not
+            :add-rule"
+    (let [st (fresh-store)
+          graph (actor/build-graph {:store st})
+          request {:client-id "client-1" :op :draft-change :stake :low
+                   :rule {:action :allow :src-zones #{"ghost"} :dst-zones #{"db"}}}
+          result (actor/run-request! graph request {} "thread-4")]
+      (is (= :hold (:disposition (:state result))))
+      (is (empty? (store/records-of st "client-1")))
+      (is (some #(= :hold (:disposition %)) (store/ledger st))))))
