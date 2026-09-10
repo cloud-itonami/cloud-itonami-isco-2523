@@ -117,3 +117,126 @@
                                         :confidence 0.3) st)]
     (is (not (:hard? v)))
     (is (:escalate? v))))
+
+;; ── the invariants bind to the rule body, not to one operation ──────────
+;;
+;; Until 2026-09-11 every check below sat behind `(= :add-rule op)`, so the
+;; same rule body under any other operation was never read. These tests fail
+;; against that governor; that is the point of them. The bodies here are
+;; deliberately identical to the ones the :add-rule tests above use, so the
+;; only variable is the operation name.
+
+(defn- carrying [op rule]
+  {:op op :effect :propose :rule rule :confidence 0.9 :stake :low})
+
+(def ^:private rule-carrying-ops [:add-rule :draft-change :apply-to-production])
+
+(deftest hard-on-undeclared-operation
+  (testing "the operation vocabulary is a closed allowlist, not a denylist"
+    (let [st (fresh-store)
+          v (governor/check req {} (carrying :delete-every-rule
+                                             {:action :allow
+                                              :src-zones #{"lan"}
+                                              :dst-zones #{"db"}}) st)]
+      (is (:hard? v))
+      (is (some #(= :unsupported-operation (:rule %)) (:violations v))))))
+
+(deftest undeclared-operations-answer-false-everywhere
+  (is (not (governor/supported? :delete-every-rule)))
+  (is (not (governor/supported? :unknown)))
+  (is (not (governor/supported? nil)))
+  (doseq [op rule-carrying-ops]
+    (is (governor/supported? op) (str op " must be declared"))))
+
+(deftest an-unparseable-advisor-proposal-holds
+  (testing "netops.advisor emits :op :unknown when it cannot parse the LLM
+            reply; that must hold, not merely escalate on low confidence"
+    (let [st (fresh-store)
+          v (governor/check req {} {:op :unknown :effect :propose
+                                    :confidence 0.0 :stake :high} st)]
+      (is (:hard? v))
+      (is (some #(= :unsupported-operation (:rule %)) (:violations v))))))
+
+(deftest zone-basis-applies-to-every-operation-carrying-a-rule
+  (doseq [op rule-carrying-ops]
+    (testing (str "invented zone under " op)
+      (let [st (fresh-store)
+            v (governor/check req {} (carrying op {:action :allow
+                                                   :src-zones #{"lan" "ghost"}
+                                                   :dst-zones #{"db"}}) st)]
+        (is (:hard? v) (str op " must refuse an invented zone"))
+        (is (some #(= :unknown-zone (:rule %)) (:violations v)))))))
+
+(deftest foreign-zone-refused-under-every-operation-carrying-a-rule
+  (doseq [op rule-carrying-ops]
+    (testing (str "another client's zone under " op)
+      (let [st (fresh-store)]
+        (store/register-client! st {:client-id "client-2" :name "Other"})
+        (store/register-zone! st {:zone-id "other-lan" :client-id "client-2"
+                                  :name "other-lan"})
+        (let [v (governor/check req {} (carrying op {:action :allow
+                                                     :src-zones #{"other-lan"}
+                                                     :dst-zones #{"db"}}) st)]
+          (is (:hard? v) (str op " must refuse a foreign zone"))
+          (is (some #(= :zone-wrong-client (:rule %)) (:violations v))))))))
+
+(deftest shadow-detection-applies-to-every-operation-carrying-a-rule
+  (doseq [op rule-carrying-ops]
+    (testing (str "dead config under " op)
+      (let [st (fresh-store)]
+        (store/register-rule! st {:rule-id "R-1" :client-id "client-1" :order 1
+                                  :action :deny :src-zones #{"lan" "dmz"}
+                                  :dst-zones #{"db"}})
+        (let [v (governor/check req {} (carrying op {:action :allow
+                                                     :src-zones #{"lan"}
+                                                     :dst-zones #{"db"}}) st)]
+          (is (:hard? v) (str op " must refuse config an earlier rule covers"))
+          (is (some #(= :shadowed-rule (:rule %)) (:violations v))))))))
+
+(deftest production-apply-with-an-invented-zone-holds-rather-than-escalating
+  (testing "the worst of the four: stopping and giving a reason are different
+            acts. A live network change citing a zone that does not exist
+            reached human sign-off as {:escalate? true :violations []}."
+    (let [st (fresh-store)
+          v (governor/check req {} (carrying :apply-to-production
+                                             {:action :allow
+                                              :src-zones #{"ghost"}
+                                              :dst-zones #{"db"}}) st)]
+      (is (:hard? v) "must hold, not escalate")
+      (is (not (:escalate? v)) "a held proposal is not an escalated one")
+      (is (seq (:violations v)) "and it must arrive with its reason attached"))))
+
+(deftest hard-on-empty-rule-basis
+  (testing "a rule naming no zone on either side matches nothing --
+            dead by construction, and with no active rules there is no
+            containment to catch it"
+    (let [st (fresh-store)
+          v (governor/check req {} (carrying :add-rule {:action :allow
+                                                        :src-zones #{}
+                                                        :dst-zones #{}}) st)]
+      (is (:hard? v))
+      (is (some #(= :empty-rule-basis (:rule %)) (:violations v))))))
+
+(deftest draft-change-requires-a-rule-body
+  (let [st (fresh-store)
+        v (governor/check req {} {:op :draft-change :effect :propose
+                                  :confidence 0.9 :stake :low} st)]
+    (is (:hard? v))
+    (is (some #(= :no-rule (:rule %)) (:violations v)))))
+
+(deftest a-clean-rule-still-passes-under-every-operation
+  (testing "the refusals above are not a blanket deny"
+    (doseq [op [:add-rule :draft-change]]
+      (let [st (fresh-store)
+            v (governor/check req {} (carrying op {:action :allow
+                                                   :src-zones #{"lan"}
+                                                   :dst-zones #{"db"}}) st)]
+        (is (:ok? v) (str op " with a clean rule must pass"))
+        (is (empty? (:violations v)))))
+    (let [st (fresh-store)
+          v (governor/check req {} (carrying :apply-to-production
+                                             {:action :allow
+                                              :src-zones #{"lan"}
+                                              :dst-zones #{"db"}}) st)]
+      (is (not (:hard? v)) "a clean production apply is not held")
+      (is (:escalate? v) "but it still needs a human"))))
