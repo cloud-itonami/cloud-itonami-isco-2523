@@ -11,7 +11,7 @@ NetworkProfessionalsGovernor as a langgraph StateGraph
 interrupt), modeled on cloud-itonami-isco-4311's bookkeeping actor.
 25 tests / 73 assertions green.
 
-Run them with `clojure -M:test`, which runs `run_tests.kotoba`. That
+Run them with `kbb -M:test`, which runs `run_tests.kotoba`. That
 count is a **floor**, not a note: the runner reads it back out of this
 sentence and refuses (exit 2) if the run comes in under it, if the
 sentence goes missing, or if it ever publishes zero. Between
