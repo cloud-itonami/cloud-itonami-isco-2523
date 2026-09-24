@@ -1,0 +1,33 @@
+;; What this vertical's robot physically does, declared for
+;; kotoba.robotics.process (kotoba-lang/robotics). `kbb -M:physics` runs it.
+;;
+;; ISCO 2523, computer network professionals. The README calls this pure-cognitive work with no robotics
+;; gate; blueprint.edn nevertheless declares :itonami.blueprint/robotics true.
+;; The physical work declared here is the handling the occupation itself
+;; entails (ASSUMPTION, not stated in the README): installing a network switch at the top of a rack, and towing a cable-drum cart along the cable route.
+;; Replace with the README premise once one is written.
+;;
+;; Every number without a cited source is marked `estimate` in its :basis.
+;; Replacing an estimate with a sourced value is this bot's growth work.
+{:physics/schema "itonami.physical-ai.spec.v1"
+ :repo "cloud-itonami/cloud-itonami-isco-2523"
+ :cases
+ [{:id :switch-to-top-of-rack
+   :kind :manipulator
+   :procedure "arm raises a 1U network switch from the cart to the top-of-rack position for the technician to fasten"
+   :params {:l1-m 0.60 :l2-m 0.55 :m1-kg 8.0 :m2-kg 6.0
+            :from [0.70 -0.10] :to [0.35 1.00] :duration-s 3.0 :steps 500}
+   :sweep {:param :payload-kg :values [3.0 6.0 10.0 15.0 20.0]}
+   :quantity :peak-tau1-nm
+   :limit {:max 350.0 :basis "estimate: continuous shoulder torque of a 20 kg-payload class industrial arm"}
+   :boundary {:lo 1.0 :hi 80.0}}
+  {:id :cable-drum-tow
+   :kind :transport
+   :procedure "AMR tows a cable-drum cart along the cable route while the technician pulls cable into the tray"
+   :params {:mass-kg 50.0 :distance-m 40.0 :v-max-mps 0.6 :a-max-mps2 0.3
+            :brake-decel-mps2 0.5 :drive-force-n 70.0 :crr 0.03
+            :cog-height-m 0.60 :support-half-length-m 0.30}
+   :sweep {:param :payload-kg :values [20.0 50.0 80.0 120.0 160.0]}
+   :quantity :cycle-time-s
+   :limit {:max 80.0 :basis "estimate: one tow leg within 80 s matches the pace of cable pulling between tray supports"}
+   :boundary {:lo 5.0 :hi 250.0}}]}
