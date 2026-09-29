@@ -20,7 +20,7 @@
   assertions green'. Those 14 tests had not run since the rename, and
   nothing reported it, because a suite that ran nothing returns the
   same value as a suite that ran everything and found no fault
-  (CLAUDE.md, ADR-2608136000, question 2). The tests were never
+  (AGENTS.md, ADR-2608136000, question 2). The tests were never
   broken. The runner had stopped being able to see them.
 
   ## Why the runner is .kotoba and not .clj
